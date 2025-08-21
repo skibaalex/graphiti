@@ -3,8 +3,15 @@ FROM python:3.12-slim as builder
 
 WORKDIR /app
 
+# Ensure any forwarded proxy env vars do not break apt/curl inside the image
+ENV http_proxy="" \
+    https_proxy="" \
+    HTTP_PROXY="" \
+    HTTPS_PROXY=""
+
 # Install system dependencies for building
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN printf 'Acquire::http::Proxy "false";\nAcquire::https::Proxy "false";\n' > /etc/apt/apt.conf.d/99no-proxy \
+    && apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     curl \
     ca-certificates \
@@ -35,8 +42,15 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Runtime stage - build the server here
 FROM python:3.12-slim
 
+# Ensure any forwarded proxy env vars do not break apt/curl inside the image
+ENV http_proxy="" \
+    https_proxy="" \
+    HTTP_PROXY="" \
+    HTTPS_PROXY=""
+
 # Install uv using the installer script
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN printf 'Acquire::http::Proxy "false";\nAcquire::https::Proxy "false";\n' > /etc/apt/apt.conf.d/99no-proxy \
+    && apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*

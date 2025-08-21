@@ -4,7 +4,8 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN printf 'Acquire::http::Proxy "false";\nAcquire::https::Proxy "false";\n' > /etc/apt/apt.conf.d/99no-proxy \
+    && apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -22,6 +23,12 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_PYTHON_DOWNLOADS=never \
     MCP_SERVER_HOST="0.0.0.0" \
     PYTHONUNBUFFERED=1
+
+# Ensure proxy environment variables are empty to avoid apt/curl proxy issues
+ENV http_proxy="" \
+    https_proxy="" \
+    HTTP_PROXY="" \
+    HTTPS_PROXY=""
 
 # Create non-root user
 RUN groupadd -r app && useradd -r -d /app -g app app

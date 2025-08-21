@@ -1,48 +1,99 @@
 services:
-  graph:
-    build:
-      context: .
-    ports:
-      - "8000:8000"
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthcheck')",
-        ]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-    depends_on:
-      neo4j:
-        condition: service_healthy
-    environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - NEO4J_URI=bolt://neo4j:${NEO4J_PORT:-7687}
-      - NEO4J_USER=${NEO4J_USER}
-      - NEO4J_PASSWORD=${NEO4J_PASSWORD}
-      - PORT=8000
   neo4j:
-    image: neo4j:5.26.2
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "wget -qO- http://localhost:${NEO4J_PORT:-7474} || exit 1",
-        ]
-      interval: 1s
-      timeout: 10s
-      retries: 10
-      start_period: 3s
+    image: neo4j:5
+    platform: linux/amd64
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
+      NEO4J_apoc_export_file_enabled: "true"
+      NEO4J_apoc_import_file_enabled: "true"
+      NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
     ports:
-      - "7474:7474" # HTTP
-      - "${NEO4J_PORT:-7687}:${NEO4J_PORT:-7687}" # Bolt
+      - "7474:7474"       # Neo4j Browser (optional)
+      - "7687:7687"       # Bolt
     volumes:
       - neo4j_data:/data
+
+  # Graphiti - core API service (Python)
+  graphiti:
+    build:
+      context: ./
+      dockerfile: Dockerfile
+    # If the repo already provides an API server entrypoint, no command needed.
+    # Otherwise, adapt to whatever the repo uses to run the API (e.g., uvicorn).
     environment:
-      - NEO4J_AUTH=${NEO4J_USER}/${NEO4J_PASSWORD}
+      # Backing graph database
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+
+      # LLM / embeddings used by Graphiti
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      # Optional model hints if supported by the repo
+      MODEL_NAME: ${MODEL_NAME}
+      SMALL_MODEL_NAME: ${SMALL_MODEL_NAME}
+      SEMAPHORE_LIMIT: ${SEMAPHORE_LIMIT}
+      GRAPHITI_TELEMETRY_ENABLED: "false"
+    depends_on:
+      - neo4j
+    restart: unless-stopped
+    ports:
+      - "8002:8000"       # Expose Graphiti API (adjust if it serves on another port)
+    # If the Graphiti API binds to 0.0.0.0:8000 by default, this is fine.
+    # Otherwise, set the proper command/port here based on the repo’s docs.
+
+  # Graphiti MCP server — wraps Graphiti for MCP (SSE/HTTP)
+  graphiti-mcp:
+    build:
+      context: ./mcp_server
+      dockerfile: Dockerfile
+    # If the repo ships an MCP server image instead, replace build: with image:
+    # image: zepai/knowledge-graph-mcp:latest
+    depends_on:
+      - graphiti
+    restart: unless-stopped
+    environment:
+      # How MCP server reaches Graphiti core API
+      GRAPHITI_BASE_URL: http://graphiti:8000
+      # If MCP server talks directly to Neo4j as well, include:
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+
+      # If MCP server needs LLM keys (some builds do):
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      MODEL_NAME: ${MODEL_NAME}
+      SMALL_MODEL_NAME: ${SMALL_MODEL_NAME}
+      SEMAPHORE_LIMIT: ${SEMAPHORE_LIMIT}
+      MCP_SERVER_HOST: 0.0.0.0
+      GRAPHITI_TELEMETRY_ENABLED: "false"
+    ports:
+      - "8003:8000"       # Expose MCP server (HTTP/SSE)
+    # The MCP server should expose an SSE endpoint like /sse.
+
+  # MCP → OpenAPI proxy
+  mcpo:
+    image: ghcr.io/open-webui/mcpo:main
+    depends_on:
+      - graphiti-mcp
+    restart: unless-stopped
+    command: >
+      --port 8000
+      --api-key ${MCPO_API_KEY}
+      --server-type sse
+      --header '{"Authorization":"Bearer ${MCP_SSE_TOKEN}"}'
+      -- http://graphiti-mcp:8000/sse
+    environment:
+      MCPO_API_KEY: ${MCPO_API_KEY}
+      MCP_SSE_TOKEN: ${MCP_SSE_TOKEN}
+      # Ensure in-container requests bypass any host proxies
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      NO_PROXY: graphiti-mcp,neo4j,localhost,127.0.0.1
+    ports:
+      - "8004:8000"       # OpenAPI + Swagger at /docs
 
 volumes:
   neo4j_data:
